@@ -25,11 +25,25 @@ treeflow get                  # claim a slot at the latest origin/main and cd in
 treeflow get login-fix        # same, on branch login-fix (created if new, resumed if not)
 treeflow get login-fix --code # ...and open it in VS Code
 treeflow cd pikachu           # jump into a slot; `treeflow cd` alone goes back to main
+treeflow cd pikachu --code    # ...and open it in VS Code
+treeflow cd --code            # open the worktree you're in (from any subfolder)
 treeflow list                 # every worktree and its status; * marks where you are
 treeflow release              # give the current slot back (or `release pikachu`)
 treeflow rm pikachu           # delete a slot; its branch is kept
 treeflow gc                   # delete every free slot
 ```
+
+Every command says what it did, on stderr (stdout stays just the path):
+
+```
+✦ created pikachu  on new branch login-fix from origin/main (a1b2c3d)
+↻ reused eevee  detached at a1b2c3d; `git switch -c <name>` before committing
+○ released eevee  back to the pool
+✕ removed pikachu  branch login-fix kept
+```
+
+Glyphs and colors only appear on a terminal; piped or with `NO_COLOR` set you get plain
+`treeflow: ...` lines.
 
 Slots are named by name (`pikachu`) or by path. `get --base REF` starts somewhere other
 than `origin/HEAD`; `get --new` always makes a fresh slot.

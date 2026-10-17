@@ -227,6 +227,39 @@ def test_cli_takes_slot_names(clone, monkeypatch, capsys):
     assert tf.main(["release", "."]) == 3  # the main checkout is not a slot
 
 
+def test_cd_dot_finds_the_worktree_youre_in(clone, monkeypatch, capsys):
+    p1 = tf.get(tf.repo(clone))
+    (p1 / "sub").mkdir()
+    monkeypatch.chdir(p1 / "sub")
+    assert tf.main(["cd", "."]) == 0
+    assert capsys.readouterr().out.strip() == str(p1)
+    monkeypatch.setattr(tf, "open_in_vscode", lambda path: None)
+    assert tf.main(["cd", "--code"]) == 0
+    assert capsys.readouterr().out.strip() == str(p1)
+
+
+def test_cli_says_what_it_did(clone, monkeypatch, capsys):
+    monkeypatch.chdir(clone)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    def err(*argv: str) -> str:
+        tf.main(list(argv))
+        return capsys.readouterr().err
+
+    assert "nothing to remove" in err("gc")
+    created = err("get", "feat")
+    assert "created" in created and "new branch feat" in created
+    [slot] = tf.repo(clone).pool.iterdir()
+    assert "released" in err("release", slot.name)
+    removed = err("rm", slot.name)
+    assert "removed" in removed and "branch feat kept" in removed
+    assert "\x1b" not in created + removed
+
+    err("get")
+    err("release", next(tf.repo(clone).pool.iterdir()).name)
+    assert "reused" in err("get")
+
+
 def test_get_with_a_branch(clone):
     r = tf.repo(clone)
     p1 = tf.get(r, "feat")  # new branch, at origin/HEAD

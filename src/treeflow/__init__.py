@@ -275,30 +275,36 @@ def get(r: Repo, branch: str | None = None, base: str | None = None, new: bool =
     base = base or default_base(r)
     # Check the request up front, so a failing switch below means a bad slot, not bad input.
     try:
-        git("rev-parse", "--verify", "--quiet", f"{base}^{{commit}}", cwd=r.main)
+        sha = git("rev-parse", "--short", "--verify", "--quiet", f"{base}^{{commit}}", cwd=r.main)
     except Error:
         raise Error(f"unknown base {base!r}") from None
+    sha = sha.strip()
     if branch:
         git("check-ref-format", "--branch", branch, cwd=r.main)
     with pool_lock(r):
         wts = worktrees(r.main)
         if not branch:
             switch, add = ["--detach", base], ["--detach", "{path}", base]
+            what = f"detached at {sha}; `git switch -c <name>` before committing"
         elif has_ref(r, f"refs/heads/{branch}"):
             if holder := next((w for w in wts if w.branch == branch), None):
                 raise Error(f"branch {branch} is already checked out at {holder.path}")
             switch, add = [branch], ["{path}", branch]
+            what = f"on branch {branch}"
         elif has_ref(r, f"refs/remotes/origin/{branch}"):
             remote = f"origin/{branch}"
             switch, add = (
                 ["-c", branch, "--track", remote],
                 ["-b", branch, "--track", "{path}", remote],
             )
+            what = f"on branch {branch}, tracking {remote}"
         else:
             switch, add = (
                 ["-c", branch, "--no-track", base],
                 ["-b", branch, "--no-track", "{path}", base],
             )
+            from_ = sha if base.startswith(sha) else f"{base} ({sha})"
+            what = f"on new branch {branch} from {from_}"
 
         if not new:
             for wt in sorted((w for w in wts if is_managed(r, w)), key=lambda w: w.path.name):
@@ -307,6 +313,7 @@ def get(r: Repo, branch: str | None = None, base: str | None = None, new: bool =
                 git("worktree", "lock", "--reason", claim_reason(), str(wt.path), cwd=r.main)
                 try:
                     git("switch", *switch, cwd=wt.path)
+                    say("↻", CYAN, f"reused {paint(BOLD, wt.path.name)}", what)
                     return wt.path
                 except Error as e:  # this slot is broken somehow; try the next one
                     git("worktree", "unlock", str(wt.path), cwd=r.main)
@@ -314,6 +321,7 @@ def get(r: Repo, branch: str | None = None, base: str | None = None, new: bool =
         path = r.pool / next_name(r, wts)
         add = [str(path) if a == "{path}" else a for a in add]
         git("worktree", "add", "--quiet", "--lock", "--reason", claim_reason(), *add, cwd=r.main)
+        say("✦", GREEN, f"created {paint(BOLD, path.name)}", what)
         return path
 
 
@@ -326,6 +334,7 @@ def release(r: Repo, path: Path) -> None:
             raise Refused(f"{wt.path} was locked by someone else ({wt.locked!r}); not unlocking")
         if wt.claimed:
             git("worktree", "unlock", str(wt.path), cwd=r.main)
+            say("○", DIM, f"released {paint(BOLD, wt.path.name)}", "back to the pool")
         else:
             warn(f"{wt.path.name} was not claimed")
 
@@ -355,6 +364,8 @@ def remove(r: Repo, path: Path, force: bool = False) -> None:
             # --force is safe here: our checks passed (or the user forced), and
             # git would otherwise refuse worktrees that contain submodules.
             git("worktree", "remove", "--force", str(wt.path), cwd=r.main)
+        kept = f"branch {wt.branch} kept" if wt.branch else ""
+        say("✕", DIM, f"removed {paint(BOLD, wt.path.name)}", kept)
 
 
 def gc(r: Repo) -> list[Path]:
@@ -404,8 +415,33 @@ def age(reason: str | None) -> str:
 # ------------------------------------------------------------------------ cli
 
 
+BOLD, DIM, RED, GREEN, YELLOW, MAGENTA, CYAN = "1", "2", "31", "32", "33", "35", "36"
+STATUS_COLOR = {
+    "free": GREEN, "claimed": CYAN, "dirty": YELLOW, "missing": RED, "user-locked": MAGENTA,
+    "main": DIM, "foreign": DIM,
+}  # fmt: skip
+
+
+def fancy(stream) -> bool:
+    return stream.isatty() and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
+
+
+def paint(code: str, text: str, stream=None) -> str:
+    stream = stream or sys.stderr
+    return f"\x1b[{code}m{text}\x1b[0m" if code and fancy(stream) else text
+
+
+def say(glyph: str, color: str, msg: str, hint: str = "") -> None:
+    """A glyph and colors on a terminal; the plain `treeflow: msg, hint` everywhere else."""
+    if fancy(sys.stderr):
+        line = f"{paint(color, glyph)} {msg}" + (f"  {paint(DIM, hint)}" if hint else "")
+    else:
+        line = f"treeflow: {msg}" + (f", {hint}" if hint else "")
+    print(line, file=sys.stderr)
+
+
 def warn(msg: str) -> None:
-    print(f"treeflow: {msg}", file=sys.stderr)
+    say("!", YELLOW, msg)
 
 
 def open_in_vscode(path: Path) -> None:
@@ -420,6 +456,7 @@ def open_in_vscode(path: Path) -> None:
         cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )  # fmt: skip
+    say("↗", DIM, f"opened {paint(BOLD, path.name)} in VS Code")
 
 
 def print_table(r: Repo, here: Path | None) -> None:
@@ -429,12 +466,13 @@ def print_table(r: Repo, here: Path | None) -> None:
         name = wt.path.name if is_managed(r, wt) else "-"
         rows.append((mark, name, wt.branch or "(detached)", status(r, wt), str(wt.path)))
     widths = [max(len(row[i]) for row in rows) for i in range(4)]
-    for row in rows:
-        print(
-            "  ".join(cell.ljust(w) for cell, w in zip(row[:4], widths, strict=True))
-            + "  "
-            + row[4]
-        )
+    for i, row in enumerate(rows):
+        # Pad before painting: escape codes would throw off ljust.
+        cells = [cell.ljust(w) for cell, w in zip(row[:4], widths, strict=True)]
+        if i:
+            cells[0] = paint(BOLD, cells[0], sys.stdout)
+            cells[3] = paint(STATUS_COLOR.get(row[3].split()[0], ""), cells[3], sys.stdout)
+        print("  ".join(cells) + "  " + row[4])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -448,7 +486,9 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--new", action="store_true", help="always create a new slot")
     g.add_argument("--code", action="store_true", help="open the slot in VS Code")
     c = sub.add_parser("cd", help="print a slot's path (the shell function cd's there)")
-    c.add_argument("slot", nargs="?", help="slot name or path (default: the main checkout)")
+    c.add_argument(
+        "slot", nargs="?", help="slot name, path or . (default: main; with --code, the current one)"
+    )
     c.add_argument("--code", action="store_true", help="open the slot in VS Code")
     sub.add_parser("list", help="show every worktree and its status")
     rl = sub.add_parser("release", help="give a slot back to the pool")
@@ -468,19 +508,19 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd in ("get", "cd"):
             if a.cmd == "get":
                 path = get(r, a.branch, a.base, a.new)
-                if a.branch:
-                    warn(f"claimed {path.name}, on branch {a.branch}")
-                else:
-                    warn(f"claimed {path.name}, detached; `git switch -c <name>` before committing")
             else:
-                wt = find(r, slot_path(r, a.slot) if a.slot else r.main)
+                if a.slot == "." or (not a.slot and a.code):  # the worktree you're in
+                    target = current(Path.cwd()) or Path.cwd()
+                else:
+                    target = slot_path(r, a.slot) if a.slot else r.main
+                wt = find(r, target)
                 if wt.missing:
                     raise Error(f"{wt.path} no longer exists on disk")
                 path = wt.path
             if a.code:
                 open_in_vscode(path)
             if sys.stdout.isatty():  # not captured by the shell function
-                warn('tip: add `eval "$(treeflow init)"` to ~/.zshrc to cd there automatically')
+                say("›", DIM, 'tip: add `eval "$(treeflow init)"` to ~/.zshrc', "to cd there")
             print(path)
         elif a.cmd == "list":
             print_table(r, current(Path.cwd()))
@@ -490,12 +530,20 @@ def main(argv: list[str] | None = None) -> int:
         elif a.cmd == "rm":
             remove(r, slot_path(r, a.slot), a.force)
         elif a.cmd == "gc":
-            for path in gc(r):
-                warn(f"removed {path}")
+            removed = gc(r)
+            for path in removed:
+                say("✕", DIM, f"removed {paint(BOLD, path.name)}")
+            if not removed:
+                say("·", DIM, "nothing to remove")
     except Refused as e:
-        warn(str(e))
+        head, _, hint = str(e).partition("; ")
+        if hint and fancy(sys.stderr):
+            say("✗", RED, head)
+            print(f"  {paint(DIM, '› ' + hint)}", file=sys.stderr)
+        else:
+            say("✗", RED, str(e))
         return 3
     except Error as e:
-        warn(str(e))
+        say("✗", RED, str(e))
         return 1
     return 0
