@@ -113,13 +113,16 @@ treeflow gc                       # delete every free slot
 Every command says what it did on stderr (stdout stays just the path):
 
 ```
-✦ created pikachu  on new branch login-fix from origin/main (a1b2c3d)
-↻ reused eevee  detached at a1b2c3d; `git switch -c <name>` before committing
-○ released eevee  back to the pool
-✕ removed pikachu  branch login-fix kept
+🌱 created pikachu  on new branch login-fix from origin/main (a1b2c3d)
+🔁 reused eevee  detached at a1b2c3d; `git switch -c <name>` before committing
+🍃 released eevee  back to the pool
+🪓 removed pikachu  branch login-fix kept
+💻 opened pikachu in VS Code
+🚧 fetch failed, starting from local refs: ...
+❌ pikachu is already claimed; `treeflow release pikachu` it first
 ```
 
-Glyphs and colors only appear on a terminal; piped or with `NO_COLOR` set you get plain
+Emojis and colors only appear on a terminal; piped or with `NO_COLOR` set you get plain
 `treeflow: ...` lines.
 
 | Option | What it does |

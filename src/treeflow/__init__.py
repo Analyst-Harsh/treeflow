@@ -288,7 +288,7 @@ def take(r: Repo, wt: Worktree) -> Path:
     """Claim a slot without touching its files: resuming work, dirty or not."""
     git("worktree", "lock", "--reason", claim_reason(), str(wt.path), cwd=r.main)
     where = f"on branch {wt.branch}" if wt.branch else f"detached at {wt.head[:7]}"
-    say("↻", CYAN, f"reused {paint(BOLD, wt.path.name)}", f"as you left it, {where}")
+    say("🔁", CYAN, f"reused {paint(BOLD, wt.path.name)}", f"as you left it, {where}")
     return wt.path
 
 
@@ -366,7 +366,7 @@ def get(
             except Error:
                 git("worktree", "unlock", str(wt.path), cwd=r.main)
                 raise
-            say("↻", CYAN, f"reused {paint(BOLD, wt.path.name)}", what)
+            say("🔁", CYAN, f"reused {paint(BOLD, wt.path.name)}", what)
             return wt.path
         if slot and not SLOT_RE.fullmatch(slot):
             raise Error(
@@ -380,7 +380,7 @@ def get(
                 git("worktree", "lock", "--reason", claim_reason(), str(wt.path), cwd=r.main)
                 try:
                     git("switch", *switch, cwd=wt.path)
-                    say("↻", CYAN, f"reused {paint(BOLD, wt.path.name)}", what)
+                    say("🔁", CYAN, f"reused {paint(BOLD, wt.path.name)}", what)
                     return wt.path
                 except Error as e:  # this slot is broken somehow; try the next one
                     git("worktree", "unlock", str(wt.path), cwd=r.main)
@@ -388,7 +388,7 @@ def get(
         path = r.pool / (slot or next_name(r, wts))
         add = [str(path) if a == "{path}" else a for a in add]
         git("worktree", "add", "--quiet", "--lock", "--reason", claim_reason(), *add, cwd=r.main)
-        say("✦", GREEN, f"created {paint(BOLD, path.name)}", what)
+        say("🌱", GREEN, f"created {paint(BOLD, path.name)}", what)
         return path
 
 
@@ -401,7 +401,7 @@ def release(r: Repo, path: Path) -> None:
             raise Refused(f"{wt.path} was locked by someone else ({wt.locked!r}); not unlocking")
         if wt.claimed:
             git("worktree", "unlock", str(wt.path), cwd=r.main)
-            say("○", DIM, f"released {paint(BOLD, wt.path.name)}", "back to the pool")
+            say("🍃", DIM, f"released {paint(BOLD, wt.path.name)}", "back to the pool")
         else:
             warn(f"{wt.path.name} was not claimed")
 
@@ -432,7 +432,7 @@ def remove(r: Repo, path: Path, force: bool = False) -> None:
             # git would otherwise refuse worktrees that contain submodules.
             git("worktree", "remove", "--force", str(wt.path), cwd=r.main)
         kept = f"branch {wt.branch} kept" if wt.branch else ""
-        say("✕", DIM, f"removed {paint(BOLD, wt.path.name)}", kept)
+        say("🪓", DIM, f"removed {paint(BOLD, wt.path.name)}", kept)
 
 
 def gc(r: Repo) -> list[Path]:
@@ -508,7 +508,7 @@ def say(glyph: str, color: str, msg: str, hint: str = "") -> None:
 
 
 def warn(msg: str) -> None:
-    say("!", YELLOW, msg)
+    say("🚧", YELLOW, msg)
 
 
 def open_in_vscode(path: Path) -> None:
@@ -523,7 +523,7 @@ def open_in_vscode(path: Path) -> None:
         cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )  # fmt: skip
-    say("↗", DIM, f"opened {paint(BOLD, path.name)} in VS Code")
+    say("💻", DIM, f"opened {paint(BOLD, path.name)} in VS Code")
 
 
 def hints(name: str, st: str, here: bool) -> list[str]:
@@ -621,7 +621,7 @@ def main(argv: list[str] | None = None) -> int:
             if a.code:
                 open_in_vscode(path)
             if sys.stdout.isatty():  # not captured by the shell function
-                say("›", DIM, 'tip: add `eval "$(treeflow init)"` to ~/.zshrc', "to cd there")
+                say("💡", DIM, 'tip: add `eval "$(treeflow init)"` to ~/.zshrc', "to cd there")
             print(path)
         elif a.cmd in ("status", "list"):
             print_table(r, current(Path.cwd()))
@@ -633,18 +633,18 @@ def main(argv: list[str] | None = None) -> int:
         elif a.cmd == "gc":
             removed = gc(r)
             for path in removed:
-                say("✕", DIM, f"removed {paint(BOLD, path.name)}")
+                say("🪓", DIM, f"removed {paint(BOLD, path.name)}")
             if not removed:
-                say("·", DIM, "nothing to remove")
+                say("💤", DIM, "nothing to remove")
     except Refused as e:
         head, _, hint = str(e).partition("; ")
         if hint and fancy(sys.stderr):
-            say("✗", RED, head)
+            say("❌", RED, head)
             print(f"  {paint(DIM, '› ' + hint)}", file=sys.stderr)
         else:
-            say("✗", RED, str(e))
+            say("❌", RED, str(e))
         return 3
     except Error as e:
-        say("✗", RED, str(e))
+        say("❌", RED, str(e))
         return 1
     return 0
