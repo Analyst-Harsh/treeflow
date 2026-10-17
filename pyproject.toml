@@ -1,0 +1,29 @@
+[project]
+name = "treeflow"
+version = "0.1.0"
+description = "Hand out, track and clean up a pool of git worktrees"
+readme = "README.md"
+authors = [
+    { name = "Harshit Goyal", email = "harshit.1188@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+treeflow = "treeflow:main"
+
+[build-system]
+requires = ["uv_build>=0.11.27,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
