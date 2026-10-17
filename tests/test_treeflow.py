@@ -227,6 +227,27 @@ def test_cli_takes_slot_names(clone, monkeypatch, capsys):
     assert tf.main(["release", "."]) == 3  # the main checkout is not a slot
 
 
+def test_hints():
+    assert tf.hints("eevee", "free", False) == ["treeflow get eevee", "treeflow rm eevee"]
+    assert tf.hints("mew", "claimed 2h", True) == ["treeflow release", "treeflow cd --code"]
+    assert tf.hints("mew", "claimed 2h", False)[0] == "treeflow release mew"
+    assert tf.hints("mew", "claimed 2h, missing: run release", False) == ["treeflow release mew"]
+    assert tf.hints("abra", "dirty", False) == ["treeflow get abra", "treeflow rm abra --force"]
+    assert tf.hints("-", "main", True) == tf.hints("-", "foreign", False) == []
+    assert tf.hints("onix", "user-locked", False) == []
+
+
+def test_status_is_list_and_plain_when_piped(clone, monkeypatch, capsys):
+    monkeypatch.chdir(clone)
+    tf.release(tf.repo(clone), tf.get(tf.repo(clone)))
+    capsys.readouterr()
+    assert tf.main(["status"]) == 0
+    status = capsys.readouterr().out
+    assert tf.main(["list"]) == 0
+    assert capsys.readouterr().out == status
+    assert "free" in status and "›" not in status and "treeflow get" not in status
+
+
 def test_cd_dot_finds_the_worktree_youre_in(clone, monkeypatch, capsys):
     p1 = tf.get(tf.repo(clone))
     (p1 / "sub").mkdir()
@@ -247,7 +268,7 @@ def test_cli_says_what_it_did(clone, monkeypatch, capsys):
         return capsys.readouterr().err
 
     assert "nothing to remove" in err("gc")
-    created = err("get", "feat")
+    created = err("get", "-b", "feat")
     assert "created" in created and "new branch feat" in created
     [slot] = tf.repo(clone).pool.iterdir()
     assert "released" in err("release", slot.name)
@@ -274,6 +295,28 @@ def test_get_with_a_branch(clone):
     assert (p2 / "f.txt").exists()
     with pytest.raises(tf.Error, match="not a valid branch name"):
         tf.get(r, "bad..name")
+
+
+def test_get_a_named_slot(clone):
+    r = tf.repo(clone)
+    p = tf.get(r, slot="pikachu")  # doesn't exist yet: created under that name
+    assert p == r.pool / "pikachu"
+    (p / "wip.txt").write_text("wip")
+    tf.release(r, p)
+    assert tf.get(r) != p  # dirty, so never handed out to just anyone
+    assert tf.get(r, slot="pikachu") == p and (p / "wip.txt").exists()  # taken as is
+    with pytest.raises(tf.Refused, match="already claimed"):
+        tf.get(r, slot="pikachu")
+    tf.release(r, p)
+    with pytest.raises(tf.Refused, match="uncommitted"):
+        tf.get(r, "feat", slot="pikachu")  # a checkout would carry the changes along
+    (p / "wip.txt").unlink()
+    assert tf.get(r, "feat", slot="pikachu") == p
+    assert sh("git", "branch", "--show-current", cwd=p).strip() == "feat"
+    tf.release(r, p)
+    assert tf.get(r, "feat") == p  # the branch's unclaimed slot is resumed
+    with pytest.raises(tf.Error, match="not a slot name"):
+        tf.get(r, slot="nope")
 
 
 def test_get_fetches_first(clone, tmp_path):

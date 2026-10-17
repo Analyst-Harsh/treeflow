@@ -264,13 +264,57 @@ def has_ref(r: Repo, ref: str) -> bool:
         return False
 
 
-def get(r: Repo, branch: str | None = None, base: str | None = None, new: bool = False) -> Path:
-    """Claim the first free slot, or create one, at `branch` or detached at base.
+def find_slot(r: Repo, slot: str) -> Worktree | None:
+    """The registered worktree a slot name or path points at, if any."""
+    try:
+        return find(r, slot_path(r, slot))
+    except Error:
+        return None
 
-    An existing branch is checked out as is, one that only exists on origin is
-    tracked from there, and a new one is created at base without an upstream (so
-    `git push -u origin <branch>` sets the right one).
+
+def claimable(r: Repo, wt: Worktree) -> None:
+    name = wt.path.name
+    if not is_managed(r, wt):
+        raise Refused(f"{wt.path} is not a treeflow slot")
+    if wt.claimed:
+        raise Refused(f"{name} is already claimed; `treeflow release {name}` it first")
+    if wt.user_locked:
+        raise Refused(f"{wt.path} was locked by someone else ({wt.locked!r})")
+    if wt.missing:
+        raise Error(f"{wt.path} no longer exists on disk")
+
+
+def take(r: Repo, wt: Worktree) -> Path:
+    """Claim a slot without touching its files: resuming work, dirty or not."""
+    git("worktree", "lock", "--reason", claim_reason(), str(wt.path), cwd=r.main)
+    where = f"on branch {wt.branch}" if wt.branch else f"detached at {wt.head[:7]}"
+    say("↻", CYAN, f"reused {paint(BOLD, wt.path.name)}", f"as you left it, {where}")
+    return wt.path
+
+
+def get(
+    r: Repo,
+    branch: str | None = None,
+    base: str | None = None,
+    new: bool = False,
+    slot: str | None = None,
+) -> Path:
+    """Claim a slot (the named one, else the first free one, else a new one).
+
+    A named slot that exists is taken as you left it, unless a branch or base asks
+    for a checkout, which needs it clean. A named slot that doesn't exist is created.
+    Otherwise the slot ends up at `branch`, or detached at base. An existing branch
+    is checked out as is (resuming the unclaimed slot that already holds it), one
+    that only exists on origin is tracked from there, and a new one is created at
+    base without an upstream (so `git push -u origin <branch>` sets the right one).
     """
+    if slot and new:
+        raise Error("--new makes a slot with a random name; drop it or the slot name")
+    if slot and not (branch or base):
+        with pool_lock(r):
+            if wt := find_slot(r, slot):
+                claimable(r, wt)
+                return take(r, wt)
     fetch(r)
     base = base or default_base(r)
     # Check the request up front, so a failing switch below means a bad slot, not bad input.
@@ -288,6 +332,9 @@ def get(r: Repo, branch: str | None = None, base: str | None = None, new: bool =
             what = f"detached at {sha}; `git switch -c <name>` before committing"
         elif has_ref(r, f"refs/heads/{branch}"):
             if holder := next((w for w in wts if w.branch == branch), None):
+                mine = slot is None or find_slot(r, slot) == holder
+                if mine and is_managed(r, holder) and holder.locked is None and not holder.missing:
+                    return take(r, holder)
                 raise Error(f"branch {branch} is already checked out at {holder.path}")
             switch, add = [branch], ["{path}", branch]
             what = f"on branch {branch}"
@@ -306,7 +353,27 @@ def get(r: Repo, branch: str | None = None, base: str | None = None, new: bool =
             from_ = sha if base.startswith(sha) else f"{base} ({sha})"
             what = f"on new branch {branch} from {from_}"
 
-        if not new:
+        if slot and (wt := find_slot(r, slot)):
+            claimable(r, wt)
+            if not is_safe(wt.path):
+                raise Refused(
+                    f"{wt.path.name} has uncommitted changes or commits on no branch; "
+                    f"`treeflow get {wt.path.name}` takes it as is"
+                )
+            git("worktree", "lock", "--reason", claim_reason(), str(wt.path), cwd=r.main)
+            try:
+                git("switch", *switch, cwd=wt.path)
+            except Error:
+                git("worktree", "unlock", str(wt.path), cwd=r.main)
+                raise
+            say("↻", CYAN, f"reused {paint(BOLD, wt.path.name)}", what)
+            return wt.path
+        if slot and not SLOT_RE.fullmatch(slot):
+            raise Error(
+                f"{slot!r} is not a slot name (Gen-1 Pokémon, like pikachu); "
+                f"for a branch, use `treeflow get -b {slot}`"
+            )
+        if not new and not slot:
             for wt in sorted((w for w in wts if is_managed(r, w)), key=lambda w: w.path.name):
                 if not is_free(r, wt):
                     continue
@@ -318,7 +385,7 @@ def get(r: Repo, branch: str | None = None, base: str | None = None, new: bool =
                 except Error as e:  # this slot is broken somehow; try the next one
                     git("worktree", "unlock", str(wt.path), cwd=r.main)
                     warn(f"skipped {wt.path.name}: {e}")
-        path = r.pool / next_name(r, wts)
+        path = r.pool / (slot or next_name(r, wts))
         add = [str(path) if a == "{path}" else a for a in add]
         git("worktree", "add", "--quiet", "--lock", "--reason", claim_reason(), *add, cwd=r.main)
         say("✦", GREEN, f"created {paint(BOLD, path.name)}", what)
@@ -459,13 +526,32 @@ def open_in_vscode(path: Path) -> None:
     say("↗", DIM, f"opened {paint(BOLD, path.name)} in VS Code")
 
 
+def hints(name: str, st: str, here: bool) -> list[str]:
+    """Commands that make sense for a slot in this state; none for worktrees that aren't ours."""
+    me = "" if here else f" {name}"  # bare `release` and `cd --code` act on where you are
+    kind = st.split()[0]
+    if kind == "claimed":
+        if "missing" in st:
+            return [f"treeflow release {name}"]
+        return [f"treeflow release{me}", f"treeflow cd{me} --code"]
+    if kind == "dirty":
+        return [f"treeflow get {name}", f"treeflow rm {name} --force"]
+    if kind == "free":
+        return [f"treeflow get {name}", f"treeflow rm {name}"]
+    if kind == "missing":
+        return [f"treeflow rm {name}"]
+    return []
+
+
 def print_table(r: Repo, here: Path | None) -> None:
+    """The table alone when piped; on a terminal, also what you can do next."""
     rows = [(" ", "NAME", "BRANCH", "STATUS", "PATH")]
     for wt in worktrees(r.main):
         mark = "*" if wt.path.resolve() == here else " "
         name = wt.path.name if is_managed(r, wt) else "-"
         rows.append((mark, name, wt.branch or "(detached)", status(r, wt), str(wt.path)))
     widths = [max(len(row[i]) for row in rows) for i in range(4)]
+    tty = sys.stdout.isatty()
     for i, row in enumerate(rows):
         # Pad before painting: escape codes would throw off ljust.
         cells = [cell.ljust(w) for cell, w in zip(row[:4], widths, strict=True)]
@@ -473,6 +559,18 @@ def print_table(r: Repo, here: Path | None) -> None:
             cells[0] = paint(BOLD, cells[0], sys.stdout)
             cells[3] = paint(STATUS_COLOR.get(row[3].split()[0], ""), cells[3], sys.stdout)
         print("  ".join(cells) + "  " + row[4])
+        if i and tty and (h := hints(row[1], row[3], row[0] == "*")):
+            print(" " * (widths[0] + 2) + paint(DIM, "› " + " · ".join(h), sys.stdout))
+    if not tty:
+        return
+    free = sorted(row[1] for row in rows if row[3] == "free")
+    print()
+    reuse = f"reuses {free[0]}" if free else "creates a new one"
+    print(f"  treeflow get                claim a slot {paint(DIM, f'({reuse})', sys.stdout)}")
+    print("  treeflow get <slot>         claim that slot as you left it")
+    print("  treeflow get --branch <b>   ...on branch b; add --code to open VS Code")
+    if free or any(row[3] == "missing" for row in rows):
+        print("  treeflow gc                 remove free slots")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -480,8 +578,9 @@ def main(argv: list[str] | None = None) -> int:
         prog="treeflow", description="Hand out, track and clean up a pool of git worktrees."
     )
     sub = p.add_subparsers(dest="cmd", required=True)
-    g = sub.add_parser("get", help="claim a free slot (or create one) and print its path")
-    g.add_argument("branch", nargs="?", help="check out this branch, creating it if new")
+    g = sub.add_parser("get", help="claim a slot (free, named or new) and print its path")
+    g.add_argument("slot", nargs="?", help="claim this slot as you left it (created if new)")
+    g.add_argument("-b", "--branch", help="check out this branch, creating it if new")
     g.add_argument("--base", help="commit to start from (default: origin/HEAD, fetched)")
     g.add_argument("--new", action="store_true", help="always create a new slot")
     g.add_argument("--code", action="store_true", help="open the slot in VS Code")
@@ -490,7 +589,9 @@ def main(argv: list[str] | None = None) -> int:
         "slot", nargs="?", help="slot name, path or . (default: main; with --code, the current one)"
     )
     c.add_argument("--code", action="store_true", help="open the slot in VS Code")
-    sub.add_parser("list", help="show every worktree and its status")
+    sub.add_parser(
+        "status", aliases=["list"], help="show every worktree, its status and what you can do next"
+    )
     rl = sub.add_parser("release", help="give a slot back to the pool")
     rl.add_argument("slot", nargs="?", help="slot name or path (default: the current one)")
     rm = sub.add_parser("rm", help="delete a slot (its branch is kept)")
@@ -507,7 +608,7 @@ def main(argv: list[str] | None = None) -> int:
         r = repo(Path.cwd())
         if a.cmd in ("get", "cd"):
             if a.cmd == "get":
-                path = get(r, a.branch, a.base, a.new)
+                path = get(r, a.branch, a.base, a.new, a.slot)
             else:
                 if a.slot == "." or (not a.slot and a.code):  # the worktree you're in
                     target = current(Path.cwd()) or Path.cwd()
@@ -522,7 +623,7 @@ def main(argv: list[str] | None = None) -> int:
             if sys.stdout.isatty():  # not captured by the shell function
                 say("›", DIM, 'tip: add `eval "$(treeflow init)"` to ~/.zshrc', "to cd there")
             print(path)
-        elif a.cmd == "list":
+        elif a.cmd in ("status", "list"):
             print_table(r, current(Path.cwd()))
         elif a.cmd == "release":
             here = slot_path(r, a.slot) if a.slot else current(Path.cwd()) or Path.cwd()

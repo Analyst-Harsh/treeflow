@@ -22,12 +22,15 @@ The shell function only wraps `get` and `cd`; everything else goes straight to t
 
 ```bash
 treeflow get                  # claim a slot at the latest origin/main and cd into it
-treeflow get login-fix        # same, on branch login-fix (created if new, resumed if not)
-treeflow get login-fix --code # ...and open it in VS Code
+treeflow get -b login-fix     # same, on branch login-fix (created if new, resumed if not)
+treeflow get -b login-fix --code  # ...and open it in VS Code
+treeflow get pikachu          # claim pikachu as you left it (created if it doesn't exist)
+treeflow get pikachu -b fix   # claim pikachu and switch it to fix (only if it's clean)
 treeflow cd pikachu           # jump into a slot; `treeflow cd` alone goes back to main
 treeflow cd pikachu --code    # ...and open it in VS Code
 treeflow cd --code            # open the worktree you're in (from any subfolder)
-treeflow list                 # every worktree and its status; * marks where you are
+treeflow status              # every worktree, its status and the commands for it
+                              # (* marks where you are; `list` works too)
 treeflow release              # give the current slot back (or `release pikachu`)
 treeflow rm pikachu           # delete a slot; its branch is kept
 treeflow gc                   # delete every free slot
@@ -67,7 +70,7 @@ Exit codes: `0` ok, `1` error, `2` bad usage, `3` refused to protect your work.
 
 - macOS and Linux only (uses `fcntl`).
 - Claims never expire. A forgotten claim keeps its slot busy until you `release` it
-  (`treeflow list` shows how old each claim is).
+  (`treeflow status` shows how old each claim is).
 - `release` doesn't know who claimed a slot: releasing someone else's slot by name
   hands it back to the pool while they're still in it.
 - Ignored files in a slot (`.env`, `node_modules`) survive reuse and are deleted by `rm`
