@@ -82,7 +82,7 @@ treeflow gc                # delete every free slot
 ## Install
 
 ```bash
-git clone <this-repo> ~/src/treeflow
+git clone https://github.com/Analyst-Harsh/treeflow.git ~/src/treeflow
 uv tool install --editable ~/src/treeflow
 echo 'eval "$(treeflow init)"' >> ~/.zshrc     # lets `get` and `cd` change your directory
 ```
